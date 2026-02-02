@@ -1,0 +1,429 @@
+name: 🖥️ REMOTE DESKTOP SERVICES
+
+on:
+  workflow_dispatch:
+    inputs:
+      os_version:
+        description: "📀 Select Operating System"
+        required: true
+        default: "Windows 10 Professional (Docker - 4vCPU | 8GB RAM)"
+        type: choice
+        options:
+          - "Windows 10 Professional (Docker - 4vCPU | 8GB RAM)"
+
+permissions:
+  contents: read
+
+jobs:
+  # ==================== JOB 0: DOWNLOAD ONCE -> UPLOAD ARTIFACT ====================
+  prepare-oem-binaries:
+    name: "📦 Prepare OEM binaries"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: 📥 Downloading required binaries
+        run: |
+          set -euxo pipefail
+          mkdir -p oem
+
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📥 Downloading Cloudflare WARP..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          WARP_URL="https://downloads.cloudflareclient.com/v1/download/windows/ga"
+          curl -L --retry 10 --retry-all-errors --retry-delay 2 \
+            -o oem/Cloudflare_WARP_Installer.bin "$WARP_URL"
+          echo "✅ WARP downloaded successfully"
+
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📥 Downloading Chromium..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          APP2_URL="https://github.com/bodoithienha2026/FreeRDPC/releases/download/assets-v1/chromium.exe"
+          curl -L --retry 10 --retry-all-errors --retry-delay 2 \
+            -o oem/chromium.exe "$APP2_URL"
+          echo "✅ Chromium downloaded successfully"
+
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🔍 Verifying file integrity..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          python3 - <<'PY'
+          p="oem/chromium.exe"
+          with open(p,"rb") as f:
+              head=f.read(2)
+          assert head == b"MZ", f"BAD download: {p} is not a Windows EXE (got {head!r})"
+          print("✅ chromium.exe verified (valid Windows executable)")
+          PY
+
+      - name: 📦 Uploading artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: oem-binaries
+          path: oem/
+          if-no-files-found: error
+          retention-days: 1
+
+  # ==================== JOB 1: WINDOWS DOCKER (10 INSTANCES) ====================
+  windows-docker:
+    name: "🖥️ Windows Instance #${{ matrix.instance }}"
+    needs: prepare-oem-binaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        instance: [1,2,3,4,5,6,7,8,9,10]
+
+    env:
+      INSTANCE: ${{ matrix.instance }}
+
+    steps:
+      - name: 📦 Downloading shared binaries
+        uses: actions/download-artifact@v5
+        with:
+          name: oem-binaries
+          path: oem
+
+      - name: 🔧 Initializing Windows System
+        run: |
+          set -e
+          sudo apt-get update > /dev/null 2>&1
+
+          echo ""
+          echo "╔═══════════════════════════════════════════════════════════════╗"
+          echo "║                  🚀 SYSTEM INITIALIZATION                     ║"
+          echo "╠═══════════════════════════════════════════════════════════════╣"
+          echo "║  Instance Number : #$INSTANCE                                  ║"
+          echo "╚═══════════════════════════════════════════════════════════════╝"
+          echo ""
+
+          SELECTED_OS="${{ github.event.inputs.os_version }}"
+
+          # Determine Windows Version
+          if [[ "$SELECTED_OS" == *"2025"* ]]; then
+            VERSION="2025"
+            OS_NAME="Windows Server 2025"
+          elif [[ "$SELECTED_OS" == *"2022"* ]]; then
+            VERSION="2022"
+            OS_NAME="Windows Server 2022"
+          elif [[ "$SELECTED_OS" == *"2019"* ]]; then
+            VERSION="2019"
+            OS_NAME="Windows Server 2019"
+          elif [[ "$SELECTED_OS" == *"2012"* ]]; then
+            VERSION="2012"
+            OS_NAME="Windows Server 2012"
+          elif [[ "$SELECTED_OS" == *"11"* ]]; then
+            VERSION="11"
+            OS_NAME="Windows 11 Professional"
+          elif [[ "$SELECTED_OS" == *"10"* ]]; then
+            VERSION="10"
+            OS_NAME="Windows 10 Professional"
+          else
+            echo "❌ Unknown OS selection: $SELECTED_OS"
+            exit 1
+          fi
+
+          echo "OS_NAME=$OS_NAME" >> $GITHUB_ENV
+
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📝 Creating Docker configuration..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # docker-compose.yml
+          cat > docker-compose.yml <<EOF
+          version: "3.9"
+          services:
+            windows:
+              image: dockurr/windows
+              container_name: windows_rdp
+              privileged: true
+              environment:
+                VERSION: "$VERSION"
+                USERNAME: "Admin"
+                PASSWORD: "123456"
+                RAM_SIZE: "8G"
+                CPU_CORES: "4"
+                DISK_SIZE: "60G"
+              devices:
+                - /dev/kvm
+              ports:
+                - "3389:3389"
+                - "8006:8006"
+              volumes:
+                - ./oem:/oem
+          EOF
+
+          echo "✅ Configuration created"
+          echo "   👤 Username: Admin"
+          echo "   🔐 Password: 123456"
+          echo "   💾 RAM: 8GB | CPU: 4 cores | Disk: 60GB"
+          echo ""
+
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "📝 Creating OEM installation scripts..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          # OEM scripts
+          cat > oem/install.bat <<'BAT'
+          @echo off
+          powershell -NoProfile -ExecutionPolicy Bypass -File "C:\OEM\install.ps1"
+          BAT
+
+          cat > oem/install.ps1 <<'PS1'
+          $ErrorActionPreference = "Stop"
+          function Write-Log($msg) { Write-Host ("[OEM] " + $msg) }
+
+          # (A) DNS 1.1.1.1 / 1.0.0.1
+          try {
+            Get-NetAdapter |
+              Where-Object { $_.Status -eq "Up" -and $_.HardwareInterface } |
+              ForEach-Object {
+                Set-DnsClientServerAddress -InterfaceIndex $_.ifIndex -ServerAddresses @("1.1.1.1","1.0.0.1")
+              }
+            Write-Log "DNS set to 1.1.1.1 / 1.0.0.1"
+          } catch {
+            Write-Log "DNS set failed: $($_.Exception.Message)"
+          }
+
+          # (B) Install Cloudflare WARP
+          $warpInstaller = Get-ChildItem -Path "C:\OEM" -Filter "Cloudflare_WARP_Installer.*" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($warpInstaller) {
+            Write-Log "Found WARP installer: $($warpInstaller.FullName)"
+
+            $b = Get-Content -Encoding Byte -Path $warpInstaller.FullName -TotalCount 2
+            $isExe = ($b.Length -ge 2 -and $b[0] -eq 0x4D -and $b[1] -eq 0x5A)
+            if ($isExe) {
+              Write-Log "Installing WARP (silent mode)..."
+              Start-Process -FilePath $warpInstaller.FullName -ArgumentList "/S" -Wait
+            } else {
+              Write-Log "Installing WARP via MSI..."
+              Start-Process msiexec.exe -ArgumentList "/i `"$($warpInstaller.FullName)`" /qn /norestart" -Wait
+            }
+
+            # Find warp-cli
+            $warpCli = $null
+            for ($i=0; $i -lt 60 -and -not $warpCli; $i++) {
+              $cmd = Get-Command "warp-cli.exe" -ErrorAction SilentlyContinue
+              if ($cmd) { $warpCli = $cmd.Source; break }
+              $guess = "C:\Program Files\Cloudflare\Cloudflare WARP\warp-cli.exe"
+              if (Test-Path $guess) { $warpCli = $guess; break }
+              Start-Sleep -Seconds 2
+            }
+
+            if ($warpCli) {
+              Write-Log "Configuring WARP connection..."
+              try { & $warpCli registration new | Out-Null } catch {}
+              try { & $warpCli connect | Out-Null } catch {}
+
+              # Auto-connect on boot
+              try {
+                $taskName = "WARP-AutoConnect"
+                $taskCmd  = "`"$warpCli`" connect"
+                schtasks.exe /Create /F /TN $taskName /SC ONSTART /RU SYSTEM /RL HIGHEST /TR $taskCmd | Out-Null
+                Write-Log "Auto-connect task created successfully"
+              } catch {
+                Write-Log "Create WARP task failed: $($_.Exception.Message)"
+              }
+            } else {
+              Write-Log "warp-cli not found after install"
+            }
+          } else {
+            Write-Log "No WARP installer found (skipping)"
+          }
+
+          # (C) Create Desktop shortcut for Chromium
+          try {
+            $target = "C:\OEM\chromium.exe"
+            if (Test-Path $target) {
+              $desktop = "C:\Users\Public\Desktop"
+              New-Item -ItemType Directory -Force -Path $desktop | Out-Null
+
+              $lnk = Join-Path $desktop "Chromium.lnk"
+              $wsh = New-Object -ComObject WScript.Shell
+              $sc  = $wsh.CreateShortcut($lnk)
+              $sc.TargetPath = $target
+              $sc.WorkingDirectory = "C:\OEM"
+              $sc.IconLocation = $target
+              $sc.Save()
+
+              Write-Log "Desktop shortcut created successfully"
+            } else {
+              Write-Log "Chromium not found at $target"
+            }
+          } catch {
+            Write-Log "Create shortcut failed: $($_.Exception.Message)"
+          }
+          PS1
+
+          echo "✅ OEM scripts created"
+          echo ""
+
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🐳 Starting Docker container..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          docker compose up -d > /dev/null 2>&1
+          echo "✅ Container started successfully"
+          echo ""
+
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🌐 Setting up tunnel service..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          wget -q https://github.com/kami2k1/tunnel/releases/latest/download/kami-tunnel-linux-amd64.tar.gz
+          tar -xzf kami-tunnel-linux-amd64.tar.gz > /dev/null 2>&1
+          chmod +x kami-tunnel
+
+          nohup ./kami-tunnel 3389 > kami_tunnel_rdp.log 2>&1 &
+          echo "✅ RDP Tunnel started (PID: $!)"
+          sleep 5
+          nohup ./kami-tunnel 8006 > kami_tunnel_web.log 2>&1 &
+          echo "✅ Web Tunnel started (PID: $!)"
+          echo ""
+
+      - name: 🌐 Connection Information
+        run: |
+          echo ""
+          echo "╔═══════════════════════════════════════════════════════════════╗"
+          echo "║              🔄 ESTABLISHING CONNECTION                       ║"
+          echo "╠═══════════════════════════════════════════════════════════════╣"
+          echo "║  Instance : #$INSTANCE                                         ║"
+          echo "║  OS       : $OS_NAME                                           ║"
+          echo "╚═══════════════════════════════════════════════════════════════╝"
+          echo ""
+
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "⏳ Waiting for RDP tunnel (Port 3389)..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          RDP_IP=""
+          RDP_RETRY=0
+
+          while [ -z "$RDP_IP" ] && [ $RDP_RETRY -lt 60 ]; do
+            if [ -f kami_tunnel.txt ]; then
+              RDP_CONTENT=$(cat kami_tunnel.txt 2>/dev/null | head -1)
+              if [[ "$RDP_CONTENT" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$ ]]; then
+                RDP_IP="$RDP_CONTENT"
+                echo "✅ RDP tunnel ready: $RDP_IP"
+                break
+              fi
+            fi
+            sleep 2
+            RDP_RETRY=$((RDP_RETRY + 1))
+            if [ $((RDP_RETRY % 10)) -eq 0 ]; then
+              echo "   ⏳ Retry $RDP_RETRY/60..."
+            fi
+          done
+
+          if [ -z "$RDP_IP" ]; then
+            echo "❌ ERROR: Could not retrieve RDP IP"
+            cat kami_tunnel_rdp.log 2>/dev/null || true
+            exit 1
+          fi
+
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "⏳ Waiting for Web Viewer tunnel (Port 8006)..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          sleep 3
+
+          WEB_IP=""
+          WEB_RETRY=0
+
+          while [ -z "$WEB_IP" ] && [ $WEB_RETRY -lt 60 ]; do
+            if [ -f kami_tunnel.txt ]; then
+              WEB_CONTENT=$(cat kami_tunnel.txt 2>/dev/null | tail -1)
+              if [[ "$WEB_CONTENT" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$ ]] && [ "$WEB_CONTENT" != "$RDP_IP" ]; then
+                WEB_IP="$WEB_CONTENT"
+                echo "✅ Web tunnel ready: $WEB_IP"
+                break
+              fi
+            fi
+            sleep 2
+            WEB_RETRY=$((WEB_RETRY + 1))
+            if [ $((WEB_RETRY % 10)) -eq 0 ]; then
+              echo "   ⏳ Retry $WEB_RETRY/60..."
+            fi
+          done
+
+          if [ -z "$WEB_IP" ]; then
+            echo "⚠️  Warning: Using fallback Web IP..."
+            BASE_IP="${RDP_IP%:*}"
+            WEB_IP="${BASE_IP}:8006"
+            echo "   📝 Constructed: $WEB_IP"
+          fi
+
+          echo ""
+          echo "╔═══════════════════════════════════════════════════════════════╗"
+          echo "║                  ✅ CONNECTION READY                          ║"
+          echo "╠═══════════════════════════════════════════════════════════════╣"
+          echo "║                                                               ║"
+          echo "║  🖥️  Operating System                                         ║"
+          echo "║      $OS_NAME                                                  ║"
+          echo "║                                                               ║"
+          echo "║  🧩  Instance Number                                          ║"
+          echo "║      #$INSTANCE                                                ║"
+          echo "║                                                               ║"
+          echo "║  🌐  RDP Connection                                           ║"
+          echo "║      $RDP_IP                                                   ║"
+          echo "║                                                               ║"
+          echo "║  🌍  Web Viewer                                               ║"
+          echo "║      http://$WEB_IP                                            ║"
+          echo "║                                                               ║"
+          echo "║  👤  Username                                                 ║"
+          echo "║      Admin                                                    ║"
+          echo "║                                                               ║"
+          echo "║  🔐  Password                                                 ║"
+          echo "║      123456                                                   ║"
+          echo "║                                                               ║"
+          echo "╚═══════════════════════════════════════════════════════════════╝"
+          echo ""
+
+          echo "RDP_IP=$RDP_IP" >> $GITHUB_ENV
+          echo "WEB_IP=$WEB_IP" >> $GITHUB_ENV
+
+      - name: ⏰ Maintaining Active Session
+        run: |
+          echo ""
+          echo "╔═══════════════════════════════════════════════════════════════╗"
+          echo "║              🟢 SESSION MAINTENANCE STARTED                   ║"
+          echo "╠═══════════════════════════════════════════════════════════════╣"
+          echo "║  Instance       : #$INSTANCE                                   ║"
+          echo "║  Duration       : 6 hours (360 minutes)                       ║"
+          echo "║  Check Interval : Every 5 minutes                             ║"
+          echo "╚═══════════════════════════════════════════════════════════════╝"
+          echo ""
+          echo "💡 Tip: Session details are hidden to keep logs clean."
+          echo "    The connection remains active in background."
+          echo ""
+
+          for i in {1..72}; do
+            ELAPSED=$((i * 5))
+            REMAINING=$((360 - ELAPSED))
+
+            # Chỉ hiện log mỗi 30 phút (mỗi 6 lần loop)
+            if [ $((i % 6)) -eq 0 ] || [ $i -eq 1 ] || [ $i -eq 72 ]; then
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "🟢 [$(date +'%H:%M:%S')] Instance #$INSTANCE - ACTIVE"
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "⏱️  Elapsed   : ${ELAPSED} min"
+              echo "⏳  Remaining : ${REMAINING} min"
+              echo "🖥️  RDP       : $RDP_IP"
+              echo "🌐  Web       : http://$WEB_IP"
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo ""
+            fi
+
+            sleep 300
+          done
+
+          echo ""
+          echo "╔═══════════════════════════════════════════════════════════════╗"
+          echo "║              ⏹️  SESSION ENDED                                ║"
+          echo "╠═══════════════════════════════════════════════════════════════╣"
+          echo "║  Instance : #$INSTANCE                                         ║"
+          echo "║  Duration : 360 minutes completed                             ║"
+          echo "║  Status   : Connection closed                                 ║"
+          echo "╚═══════════════════════════════════════════════════════════════╝"
+          echo ""
