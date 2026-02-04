@@ -1,4 +1,4 @@
-name: 🖥️ REMOTE DESKTOP SERVICES
+name: 🖥️ REMOTE VPN
 
 on:
   workflow_dispatch:
