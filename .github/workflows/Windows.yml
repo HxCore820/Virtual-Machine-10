@@ -9,6 +9,11 @@ on:
         default: "Windows 10 Professional (Docker - 4vCPU | 8GB RAM)"
         type: choice
         options:
+          - "Windows Server 2025 (Docker - 4vCPU | 8GB RAM)"
+          - "Windows Server 2022 (Docker - 4vCPU | 8GB RAM)"
+          - "Windows Server 2019 (Docker - 4vCPU | 8GB RAM)"
+          - "Windows Server 2012 (Docker - 4vCPU | 8GB RAM)"
+          - "Windows 11 Professional (Docker - 4vCPU | 8GB RAM)"
           - "Windows 10 Professional (Docker - 4vCPU | 8GB RAM)"
       
       username:
