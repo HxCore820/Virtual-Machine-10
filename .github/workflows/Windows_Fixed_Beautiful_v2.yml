@@ -76,7 +76,7 @@ jobs:
     needs: prepare-oem-binaries
     runs-on: ubuntu-latest
     timeout-minutes: 360
-    if: matrix.instance <= fromJSON(github.event.inputs.instance_count)
+    if: ${{ matrix.instance <= fromJSON(github.event.inputs.instance_count) }}
 
     strategy:
       fail-fast: false
