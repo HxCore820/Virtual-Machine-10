@@ -76,7 +76,6 @@ jobs:
     needs: prepare-oem-binaries
     runs-on: ubuntu-latest
     timeout-minutes: 360
-    if: ${{ matrix.instance <= fromJSON(github.event.inputs.instance_count) }}
 
     strategy:
       fail-fast: false
@@ -88,15 +87,27 @@ jobs:
       INSTANCE: ${{ matrix.instance }}
       USERNAME: ${{ github.event.inputs.username }}
       PASSWORD: ${{ github.event.inputs.password }}
+      MAX_INSTANCES: ${{ github.event.inputs.instance_count }}
 
     steps:
+      - name: 🔍 Check if instance should run
+        id: check
+        run: |
+          if [ "$INSTANCE" -le "$MAX_INSTANCES" ]; then
+            echo "should_run=true" >> $GITHUB_OUTPUT
+          else
+            echo "should_run=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: 📦 Download binaries
+        if: steps.check.outputs.should_run == 'true'
         uses: actions/download-artifact@v5
         with:
           name: oem-binaries
           path: oem
 
       - name: 🔧 Initialize System
+        if: steps.check.outputs.should_run == 'true'
         run: |
           set -e
           sudo apt-get update > /dev/null 2>&1
@@ -241,6 +252,7 @@ jobs:
           echo ""
 
       - name: 🌐 Connection Info
+        if: steps.check.outputs.should_run == 'true'
         run: |
           echo ""
           echo "╔════════════════════════════════════════════╗"
@@ -317,6 +329,7 @@ jobs:
           echo "WEB_IP=$WEB_IP" >> $GITHUB_ENV
 
       - name: ⏰ Maintain Session
+        if: steps.check.outputs.should_run == 'true'
         run: |
           echo ""
           echo "╔════════════════════════════════════════════╗"
